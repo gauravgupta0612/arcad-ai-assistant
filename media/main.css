@@ -1,0 +1,29 @@
+body, html {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#chat-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+#input-container {
+  display: flex;
+  padding: 10px;
+  border-top: 1px solid var(--vscode-input-border);
+}
+
+#prompt-input {
+  flex: 1;
+  resize: none;
+  border-radius: 3px;
+  margin-right: 10px;
+}
+
+#send-button {
+  border-radius: 3px;
+}
