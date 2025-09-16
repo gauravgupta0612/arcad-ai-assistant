@@ -35,11 +35,16 @@
     "configuration": {
       "title": "ARCAD AI Assistant",
       "properties": {
-        "arcad-ai-assistant.openai.apiKey": {
+        "arcad-ai-assistant.gemini.apiKey": {
           "type": "string",
-          "description": "Your API Key for OpenAI.",
+          "description": "Your API Key for Google Gemini.",
           "default": "",
           "secret": true
+        },
+        "arcad-ai-assistant.gemini.modelName": {
+          "type": "string",
+          "description": "The Gemini model to use (e.g., 'gemini-1.5-flash-latest').",
+          "default": "gemini-2.0-flash"
         }
       }
     }
@@ -56,6 +61,7 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@google/generative-ai": "^0.14.1",
     "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.1",
     "@types/node": "20.x",
@@ -68,7 +74,6 @@
     "eslint": "^8.47.0",
     "glob": "^8.1.0",
     "mocha": "^10.2.0",
-    "openai": "^4.104.0",
     "ts-loader": "^9.4.4",
     "typescript": "^5.1.6",
     "webpack": "^5.88.2",

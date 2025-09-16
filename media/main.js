@@ -23,16 +23,29 @@ function handleSendQuestion() {
 
         addMessage(question, 'user');
         questionInput.value = '';
-        
-        // Show a "thinking" message
-        addMessage('...', 'assistant', true);
     }
 }
 
 window.addEventListener('message', event => {
-    const message = event.data; // The JSON data our extension sent
+    const message = event.data; 
 
     switch (message.type) {
+        case 'updateStatus': {
+            messageHistory.innerHTML = '';
+            addMessage(message.text, 'assistant');
+            const isConnected = message.isConnected;
+            questionInput.disabled = !isConnected;
+            askButton.disabled = !isConnected;
+            if (isConnected) {
+                questionInput.placeholder = 'Ask about ARCAD products...';
+            } else {
+                questionInput.placeholder = 'Please set your Gemini API key in settings.';
+            }
+            break;
+        }
+        case 'answerStart':
+            addMessage('...', 'assistant', true);
+            break;
         case 'addAnswer': {
             const thinking = document.querySelector('.assistant-message.thinking');
             if (thinking) {
@@ -40,19 +53,26 @@ window.addEventListener('message', event => {
                 thinking.textContent = message.value;
                 thinking.classList.remove('thinking');
             } else {
-                // Subsequent chunks, append to the last assistant message
+                // Subsequent chunks, or a new message.
                 const messages = document.querySelectorAll('.assistant-message');
-                const lastMessage = messages[messages.length - 1];
-                lastMessage.textContent += message.value;
+                const lastMessage = messageHistory.lastElementChild;
+
+                // If the last message was from the user, or if there are no messages, create a new assistant message.
+                if (!lastMessage || lastMessage.classList.contains('user-message')) {
+                    addMessage(message.value, 'assistant');
+                } else {
+                    // Otherwise, append to the last message (for streaming).
+                    lastMessage.textContent += message.value;
+                }
             }
             break;
         }
         case 'addError':
-            const thinkingError = document.querySelector('.thinking');
-            if (thinkingError) {
-                thinkingError.remove();
+            const thinking = document.querySelector('.assistant-message.thinking');
+            if (thinking) {
+                thinking.remove();
             }
-            addMessage(message.value, 'assistant');
+            addMessage(message.value, 'assistant', false, true);
             break;
     }
 });

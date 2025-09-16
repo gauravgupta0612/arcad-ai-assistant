@@ -1,13 +1,9 @@
-//@ts-check
-
-'use strict';
-
 const path = require('path');
 
 /**@type {import('webpack').Configuration}*/
 const config = {
   target: 'node', // vscode extensions run in a Node.js-context 📖 -> https://webpack.js.org/configuration/node/
-  mode: 'development', // Set to 'production' when packaging
+  mode: 'none', // this leaves the source code as close as possible to the original (when packaging we set this to 'production')
 
   entry: './src/extension.ts', // the entry point of this extension, 📖 -> https://webpack.js.org/configuration/entry-context/
   output: {
@@ -16,7 +12,7 @@ const config = {
     filename: 'extension.js',
     libraryTarget: 'commonjs2'
   },
-  devtool: 'source-map',
+  devtool: 'nosources-source-map',
   externals: {
     vscode: 'commonjs vscode' // the vscode-module is created on-the-fly and must be excluded. Add other modules that cannot be webpack'ed, 📖 -> https://webpack.js.org/configuration/externals/
   },
@@ -33,7 +29,11 @@ const config = {
           {
             loader: 'ts-loader',
             options: {
-              configFile: 'tsconfig.json'
+              // This is the fix! It tells ts-loader to only do basic transpilation
+              // and not to do any type-checking. This is much faster and avoids
+              // issues with tsconfig.json files in your dependencies.
+              // Your editor will still show you type errors.
+              transpileOnly: true,
             }
           }
         ]

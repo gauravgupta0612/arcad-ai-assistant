@@ -1,17 +1,47 @@
 import * as vscode from 'vscode';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import OpenAI from 'openai';
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
+
+const CONTEXT_MAX_LENGTH = 8000;
+const ARCAD_PRODUCTS_URL = 'https://www.arcadsoftware.com/arcad/products/';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	public static readonly viewType = 'arcad-ai-assistant.chatView';
 
 	private _view?: vscode.WebviewView;
+	private _generativeAI?: GoogleGenerativeAI;
+	private _disposables: vscode.Disposable[] = [];
 
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
-	) { }
+	) {
+		this._initializeGeminiClient();
+
+		// Listen for configuration changes
+		vscode.workspace.onDidChangeConfiguration(e => {
+			if (
+				e.affectsConfiguration('arcad-ai-assistant.gemini.apiKey') ||
+				e.affectsConfiguration('arcad-ai-assistant.gemini.modelName')
+			) {
+				this._initializeGeminiClient();
+				this.sendStatus();
+			}
+		}, null, this._disposables);
+	}
+
+	private _initializeGeminiClient() {
+		const config = vscode.workspace.getConfiguration('arcad-ai-assistant.gemini');
+		const apiKey = config.get('apiKey') as string;
+
+		if (!apiKey) {
+			this._generativeAI = undefined;
+			return;
+		}
+
+		this._generativeAI = new GoogleGenerativeAI(apiKey);
+	}
 
 	public resolveWebviewView(
 		webviewView: vscode.WebviewView,
@@ -31,6 +61,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
+		this.sendStatus();
+
 		webviewView.webview.onDidReceiveMessage(async (data) => {
 			switch (data.type) {
 				case 'addQuestion':
@@ -40,19 +72,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		});
 	}
 
-	private async getWebpageAndAnswer(question: string) {
-		const apiKey = vscode.workspace.getConfiguration('arcad-ai-assistant.openai').get('apiKey') as string;
-		if (!apiKey) {
-			this.sendError("OpenAI API key not set. Please set it in the VS Code settings (`arcad-ai-assistant.openai.apiKey`).");
+	public sendStatus() {
+		if (this._view) {
+			const config = vscode.workspace.getConfiguration('arcad-ai-assistant.gemini');
+			const apiKey = config.get('apiKey');
+			const modelName = config.get('modelName');
+			let text: string;
+			let isConnected = false;
+
+			if (!apiKey) {
+				text = "Gemini API key not set. Please set it in the VS Code settings (`arcad-ai-assistant.gemini.apiKey`).";
+			} else if (!modelName) {
+				text = "Gemini model name not set. Please set it in the VS Code settings (`arcad-ai-assistant.gemini.modelName`).";
+			} else {
+				text = "Hello! I'm the ARCAD AI Assistant. How can I help you today?";
+				isConnected = true;
+			}
+			this._view.webview.postMessage({
+				type: 'updateStatus',
+				isConnected: isConnected,
+				text: text
+			});
+		}
+	}
+
+	public sendAnswerStart() {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'answerStart' });
+		}
+	}
+
+	private async getWebpageAndAnswer(question: string): Promise<void> {
+		const config = vscode.workspace.getConfiguration('arcad-ai-assistant.gemini');
+		const modelName = config.get('modelName') as string;
+
+		if (!this._generativeAI) {
+			this.sendError("Gemini API key not set. Please set it in the VS Code settings (`arcad-ai-assistant.gemini.apiKey`).");
+			return;
+		}
+		if (!modelName) {
+			this.sendError("Gemini model name is not set in VS Code settings (`arcad-ai-assistant.gemini.modelName`).");
 			return;
 		}
 
-		const openai = new OpenAI({ apiKey });
+		this.sendAnswerStart();
 
 		try {
-			// 1. Fetch web content
-			const url = 'https://www.arcadsoftware.com/arcad/products/';
-			const { data } = await axios.get(url);
+			const { data } = await axios.get(ARCAD_PRODUCTS_URL, { timeout: 5000 });
 			const $ = cheerio.load(data);
 			// Extract text from the main content area to provide context
 			const contextText = $('main').text().replace(/\s\s+/g, ' ').trim();
@@ -60,11 +126,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			// 2. Construct the prompt for the AI
 			const prompt = `
 				Based on the following context about ARCAD Software's products, please answer the user's question.
-				The context is from ${url}.
+				The context is from ${ARCAD_PRODUCTS_URL}.
 
 				Context:
 				---
-				${contextText.substring(0, 8000)}
+				${contextText.substring(0, CONTEXT_MAX_LENGTH)}
 				---
 
 				Question: "${question}"
@@ -72,21 +138,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				Answer:
 			`;
 
-			// 3. Call the OpenAI API
-			const stream = await openai.chat.completions.create({
-				messages: [{ role: 'user', content: prompt }],
-				model: 'gpt-3.5-turbo',
-				stream: true,
-			});
+			// 3. Call the Gemini API
+			const model = this._generativeAI.getGenerativeModel({
+				model: modelName,
+				safetySettings: [
+					{ category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+					{ category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+					{ category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+					{ category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+				]
+			 });
 
-			for await (const chunk of stream) {
-				const content = chunk.choices[0]?.delta?.content || '';
-				// Stream the content to the webview
-				this.sendAnswer(content);
+			const result = await model.generateContentStream(prompt);
+			let text = '';
+			for await (const chunk of result.stream) {
+				const chunkText = chunk.text();
+				this.sendAnswer(chunkText);
+				text += chunkText;
 			}
+
 		} catch (error: any) {
 			console.error(error);
-			this.sendError(`Sorry, an error occurred: ${error.message}`);
+			if (axios.isAxiosError(error)) {
+				this.sendError(`Sorry, an error occurred while fetching web content: ${error.message}`);
+			} else {
+				this.sendError(`Sorry, an error occurred with the Gemini API: ${error.message}`);
+			}
 		}
 	}
 
@@ -129,9 +206,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			<body>
 				<div class="chat-container">
 					<div id="message-history" class="message-history">
-						<div class="message assistant-message">
-							Hello! I'm the ARCAD AI Assistant. How can I help you today?
-						</div>
+						<!-- Messages will be populated by JavaScript -->
 					</div>
 					<div class="chat-input-container">
 						<textarea id="question-input" class="chat-input" placeholder="Ask about ARCAD products..."></textarea>
