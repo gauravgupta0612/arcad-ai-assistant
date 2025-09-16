@@ -27,6 +27,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		};
 
 		webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+
+		webviewView.webview.onDidReceiveMessage(data => {
+			switch (data.type) {
+				case 'newPrompt':
+					{
+						const response = "I am the ARCAD AI Assistant. Ask me a question about ARCAD products.";
+						webviewView.webview.postMessage({ type: 'addResponse', value: response });
+						break;
+					}
+			}
+		});
 	}
 
 	private _getHtmlForWebview(webview: vscode.Webview) {
