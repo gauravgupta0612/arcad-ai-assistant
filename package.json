@@ -31,6 +31,17 @@
           "type": "webview"
         }
       ]
+    },
+    "configuration": {
+      "title": "ARCAD AI Assistant",
+      "properties": {
+        "arcad-ai-assistant.openai.apiKey": {
+          "type": "string",
+          "description": "Your API Key for OpenAI.",
+          "default": "",
+          "secret": true
+        }
+      }
     }
   },
   "scripts": {
@@ -45,19 +56,23 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@types/vscode": "^1.82.0",
     "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.1",
     "@types/node": "20.x",
+    "@types/vscode": "^1.82.0",
     "@typescript-eslint/eslint-plugin": "^6.4.0",
     "@typescript-eslint/parser": "^6.4.0",
+    "@vscode/test-electron": "^2.3.4",
+    "axios": "^1.12.2",
+    "cheerio": "^1.1.0",
     "eslint": "^8.47.0",
     "glob": "^8.1.0",
     "mocha": "^10.2.0",
-    "typescript": "^5.1.6",
+    "openai": "^4.104.0",
     "ts-loader": "^9.4.4",
+    "typescript": "^5.1.6",
     "webpack": "^5.88.2",
     "webpack-cli": "^5.1.4",
-    "@vscode/test-electron": "^2.3.4"
+    "webpack-dev-server": "^4.15.1"
   }
 }

@@ -1,47 +1,69 @@
 // @ts-ignore
+const vscode = acquireVsCodeApi();
 
-// This script will be run within the webview itself
-// It cannot import modules, but it can use the acquireVsCodeApi() method to
-// get a vscode API object that allows it to communicate with the extension.
-(function () {
-    const vscode = acquireVsCodeApi();
+const messageHistory = document.getElementById('message-history');
+const questionInput = document.getElementById('question-input');
+const askButton = document.getElementById('ask-button');
 
-    const chatContainer = document.getElementById('chat-container');
-    const promptInput = document.getElementById('prompt-input');
-    const sendButton = document.getElementById('send-button');
-
-    // Handle messages sent from the extension to the webview
-    window.addEventListener('message', event => {
-        const message = event.data; // The json data that the extension sent
-        switch (message.type) {
-            case 'addResponse':
-                addResponse(message.value);
-                break;
-        }
-    });
-
-    function addResponse(response) {
-        const p = document.createElement('p');
-        p.textContent = response;
-        chatContainer.appendChild(p);
+askButton.addEventListener('click', handleSendQuestion);
+questionInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        handleSendQuestion();
     }
+});
 
-    if (sendButton && promptInput) {
-        sendButton.addEventListener('click', () => {
-            const prompt = promptInput.value;
-            if (prompt) {
-                // Add user's prompt to chat
-                const p = document.createElement('p');
-                p.textContent = "You: " + prompt;
-                chatContainer.appendChild(p);
-
-                // Send prompt to extension
-                vscode.postMessage({
-                    type: 'newPrompt',
-                    value: prompt
-                });
-                promptInput.value = '';
-            }
+function handleSendQuestion() {
+    const question = questionInput.value.trim();
+    if (question) {
+        vscode.postMessage({
+            type: 'addQuestion',
+            value: question
         });
+
+        addMessage(question, 'user');
+        questionInput.value = '';
+        
+        // Show a "thinking" message
+        addMessage('...', 'assistant', true);
     }
-}());
+}
+
+window.addEventListener('message', event => {
+    const message = event.data; // The JSON data our extension sent
+
+    switch (message.type) {
+        case 'addAnswer': {
+            const thinking = document.querySelector('.assistant-message.thinking');
+            if (thinking) {
+                // First chunk, replace the "thinking" text
+                thinking.textContent = message.value;
+                thinking.classList.remove('thinking');
+            } else {
+                // Subsequent chunks, append to the last assistant message
+                const messages = document.querySelectorAll('.assistant-message');
+                const lastMessage = messages[messages.length - 1];
+                lastMessage.textContent += message.value;
+            }
+            break;
+        }
+        case 'addError':
+            const thinkingError = document.querySelector('.thinking');
+            if (thinkingError) {
+                thinkingError.remove();
+            }
+            addMessage(message.value, 'assistant');
+            break;
+    }
+});
+
+function addMessage(text, type, isThinking = false) {
+    const messageElement = document.createElement('div');
+    messageElement.className = `message ${type}-message`;
+    if (isThinking) {
+        messageElement.classList.add('thinking');
+    }
+    messageElement.textContent = text;
+    messageHistory.appendChild(messageElement);
+    messageHistory.scrollTop = messageHistory.scrollHeight;
+}
