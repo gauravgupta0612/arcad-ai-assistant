@@ -3,17 +3,40 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { GeminiConnector } from './GeminiConnector';
 
-const CONTEXT_MAX_LENGTH = 8000;
 const ARCAD_PRODUCTS_URL = 'https://www.arcadsoftware.com/arcad/products/';
+const GITHUB_FALLBACK_URL = 'https://github.com/ARCAD-Software';
+const MIN_CONTENT_LENGTH = 200; // The minimum number of characters to consider the content sufficient.
 
-// A map of ARCAD products and their specific URLs
 const ARCAD_PRODUCT_MAP: { [key: string]: string } = {
-	"ARCAD-Skipper": "https://www.arcadsoftware.com/products/arcad-skipper/",
-	"ARCAD-Verifier": "https://www.arcadsoftware.com/products/arcad-verifier/",
-	"ARCAD-Transformer": "https://www.arcadsoftware.com/products/arcad-transformer/",
-	"ARCAD-Listener": "https://www.arcadsoftware.com/products/arcad-listener/",
-	"ARCAD-Observer": "https://www.arcadsoftware.com/products/arcad-observer/",
-	"DROPS": "https://www.arcadsoftware.com/products/drops-devops/",
+  "ARCAD-Skipper": "https://www.arcadsoftware.com/products/arcad-skipper/",  
+  "ARCAD-Verifier": "https://www.arcadsoftware.com/products/arcad-verifier/",  
+  "ARCAD-Transformer": "https://www.arcadsoftware.com/products/arcad-transformer/",  
+  "ARCAD-Listener": "https://www.arcadsoftware.com/products/arcad-listener/",  
+  "ARCAD-Observer": "https://www.arcadsoftware.com/products/arcad-observer/",  
+  "DROPS": "https://www.arcadsoftware.com/products/drops-devops/",  
+  "ARCAD-CodeChecker": "https://www.arcadsoftware.com/products/arcad-codechecker/",  
+  "ARCAD-API": "https://www.arcadsoftware.com/products/arcad-api/",  
+  "ARCAD-Builder": "https://www.arcadsoftware.com/products/arcad-builder/",  
+  "ARCAD-Deliver": "https://www.arcadsoftware.com/products/arcad-deliver/",  
+  "ARCAD-Jira": "https://www.arcadsoftware.com/products/arcad-jira/",  
+  "ARCAD-Testing": "https://www.arcadsoftware.com/products/arcad-testing/",
+
+  // Additional / newer products & tools
+  "ARCAD Discover": "https://www.arcadsoftware.com/arcad/products/arcad-discover/",  
+  "ARCAD Audit": "https://www.arcadsoftware.com/arcad/products/arcad-audit/",
+  "ARCAD Dashboards": "https://www.arcadsoftware.com/arcad/products/arcad-dashboards/",  
+  "ARCAD iUnit": "https://www.arcadsoftware.com/arcad/products/arcad-iunit-ibm-i-unit-testing/",  
+  "ARCAD Transformer DB": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-db-database-modernization/",  
+  "ARCAD Transformer RPG": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-rpg-free-format-rpg-conversion/",  
+  "ARCAD Transformer Microservices": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-microservices-rpg-refactoring-and-web-service-creation/",  
+  "ARCAD Transformer Field": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-field-change-field-sizes-and-types/",  
+  "ARCAD Transformer Synon": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-synon-conversion/",  
+  "DOT Anonymizer": "https://www.arcadsoftware.com/dot/data-masking/dot-anonymizer/",  
+  "ARCAD Migration Kit": "https://www.arcadsoftware.com/arcad/products/arcad-migration-kit-migrate-to-a-modern-devops-environment/",  
+
+  // Optional / non-product special tools or pages
+  "Careers": "https://www.arcadsoftware.com/about/job-offers/",
+  "DOT": "https://www.arcadsoftware.com/dot/data-masking/dot-anonymizer/"
 };
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -23,6 +46,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	private _view?: vscode.WebviewView;
 	private _geminiConnector?: GeminiConnector;
 	private _disposables: vscode.Disposable[] = [];
+	private _abortController: AbortController | null = null;
+	private _isProcessing: boolean = false;
 
 	constructor(
 		private readonly _extensionUri: vscode.Uri,
@@ -91,6 +116,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 						this.sendError("A critical, unexpected error occurred. Please check the extension's developer logs for more details.");
 					});
 					break;
+				case 'cancelRequest':
+					if (this._isProcessing && this._abortController) {
+						this._abortController.abort();
+					}
+					break;
 			}
 		});
 	}
@@ -133,92 +163,153 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	 * @param question The user's question.
 	 */
 	private async handleQuestion(question: string): Promise<void> {
-		// 1. Check if the question explicitly mentions a known product.
-		const productKeys = Object.keys(ARCAD_PRODUCT_MAP);
-		const mentionedProduct = productKeys.find(key => question.toLowerCase().includes(key.toLowerCase()));
-
-		if (mentionedProduct) {
-			const productUrl = ARCAD_PRODUCT_MAP[mentionedProduct];
-			await this.getAnswerForUrl(question, productUrl);
+		if (this._isProcessing) {
+			this.sendError("Please wait, your previous question is still being processed.");
 			return;
 		}
 
-		// 2. If no specific product is mentioned, check for generic terms to trigger the Quick Pick.
-		const genericTerms = ['product', 'products', 'list', 'all', 'what do you offer'];
-		const isGeneric = genericTerms.some(term => question.toLowerCase().includes(term));
+		this._isProcessing = true;
+		this._abortController = new AbortController();
+		try {
+			// 1. Check if the question explicitly mentions a known product.
+			const productKeys = Object.keys(ARCAD_PRODUCT_MAP);
+			const mentionedProduct = productKeys.find(key => question.toLowerCase().includes(key.toLowerCase()));
 
-		if (isGeneric) {
-			const selectedProduct = await vscode.window.showQuickPick(productKeys, {
-				placeHolder: "Which ARCAD product are you interested in?",
-				title: "Select a Product"
-			});
-
-			if (selectedProduct) {
-				const productUrl = ARCAD_PRODUCT_MAP[selectedProduct];
-				const specificQuestion = `Please provide a detailed summary of the ARCAD product: ${selectedProduct}.`;
-				await this.getAnswerForUrl(specificQuestion, productUrl);
+			if (mentionedProduct) {
+				const productUrl = ARCAD_PRODUCT_MAP[mentionedProduct];
+				await this.getAnswerForUrl(question, productUrl, this._abortController.signal);
+				return;
 			}
-		} else {
-			// 3. For all other questions, use the default configured URL as a fallback.
-			const productConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.product');
-			const defaultUrl = productConfig.get<string>('contextUrl') || ARCAD_PRODUCTS_URL;
-			await this.getAnswerForUrl(question, defaultUrl);
+
+			// 2. If no specific product is mentioned, check for generic terms to trigger the Quick Pick.
+			const genericTerms = ['product', 'products', 'list', 'all', 'what do you offer'];
+			const isGeneric = genericTerms.some(term => question.toLowerCase().includes(term));
+
+			if (isGeneric) {
+				const selectedProduct = await vscode.window.showQuickPick(productKeys, {
+					placeHolder: "Which ARCAD product are you interested in?",
+					title: "Select a Product"
+				});
+
+				if (selectedProduct) {
+					const productUrl = ARCAD_PRODUCT_MAP[selectedProduct];
+					const specificQuestion = `Please provide a detailed summary of the ARCAD product: ${selectedProduct}.`;
+					await this.getAnswerForUrl(specificQuestion, productUrl, this._abortController.signal);
+				}
+			} else {
+				// 3. For all other questions, use the default configured URL as a fallback.
+				const productConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.product');
+				const defaultUrl = productConfig.get<string>('contextUrl') ?? ARCAD_PRODUCTS_URL;
+				await this.getAnswerForUrl(question, defaultUrl, this._abortController.signal);
+			}
+		} finally {
+			// Ensure the controller is cleaned up once processing is complete.
+			this._abortController = null;
+			this._isProcessing = false;
 		}
 	}
 
-	private async getAnswerForUrl(question: string, contextUrl: string): Promise<void> {
+	private async getAnswerForUrl(question: string, contextUrl: string, signal: AbortSignal): Promise<void> {
 		if (!this._geminiConnector) {
 			this.sendError("AI Assistant is not configured. Please check your API key and model name in the settings.");
+			this.sendAnswerStop();
 			return;
 		}
 
 		this.sendAnswerStart();
 
 		try {
-			const { data } = await axios.get(contextUrl, { timeout: 10000 });
-			const $ = cheerio.load(data);
-			const contextText = $('main').text().replace(/\s\s+/g, ' ').trim();
+			// 1. Fetch content from the primary URL. Pass the signal to allow cancellation.
+			let { contextText, finalContextUrl } = await this._getContext(contextUrl, this._abortController!.signal);
 
-			const result = await this._geminiConnector.getStreamingAnswer(question, contextText, contextUrl);
+			// 2. Get and stream the answer from the AI.
+			const result = await this._geminiConnector.getStreamingAnswer(question, contextText, finalContextUrl);
 			let text = '';
 			for await (const chunk of result.stream) {
+				if (this._abortController?.signal.aborted) {
+					// Stop streaming if a cancellation is requested.
+					break;
+				}
 				const chunkText = chunk.text();
 				this.sendAnswer(chunkText);
 				text += chunkText;
 			}
 
+			// 3. Check the final response reason.
 			const fullResponse = await result.response;
 			const finishReason = fullResponse.candidates?.[0]?.finishReason;
 			if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
 				this.sendError(`The AI stopped responding for the following reason: ${finishReason}. This could be due to safety settings or other limitations.`);
 			}
-
 		} catch (error: any) {
 			console.error(error);
-			if (axios.isAxiosError(error)) {
-				if (error.code === 'ECONNABORTED') {
-					this.sendError('Sorry, the request to fetch web content timed out after 10 seconds. The website may be slow or unavailable. Please try again later.');
-				} else {
-					this.sendError(`Sorry, an error occurred while fetching web content: ${error.message}`);
-				}
+			this._handleError(error);
+		} finally {
+			this.sendAnswerStop();
+		}
+	}
+
+	/**
+	 * Fetches and parses content from a URL, with a fallback to GitHub if the initial content is insufficient.
+	 */
+	private async _getContext(initialUrl: string, signal: AbortSignal): Promise<{ contextText: string, finalContextUrl: string }> {
+		// 1. Try to fetch from the primary URL
+		let contextText = await this._fetchAndParseUrl(initialUrl, signal, 'main');
+
+		// 2. If content is insufficient, try the GitHub fallback URL
+		if (contextText.length < MIN_CONTENT_LENGTH) {
+			this.sendAnswer(`*Primary source had limited information. Fetching from ARCAD's GitHub for more context...*\n\n`);
+			const fallbackText = await this._fetchAndParseUrl(GITHUB_FALLBACK_URL, signal, '#org-repositories');
+			return { contextText: fallbackText, finalContextUrl: GITHUB_FALLBACK_URL };
+		}
+
+		return { contextText, finalContextUrl: initialUrl };
+	}
+
+	/**
+	 * Fetches content from a URL and parses the text from a given selector.
+	 */
+	private async _fetchAndParseUrl(url: string, signal: AbortSignal, selector: string): Promise<string> {
+		const { data } = await axios.get(url, { timeout: 10000, signal });
+		const $ = cheerio.load(data);
+		return $(selector).text().replace(/\s\s+/g, ' ').trim();
+	}
+
+	/**
+	 * Centralized error handler to send messages to the webview.
+	 */
+	private _handleError(error: any) {
+		if (axios.isCancel(error)) {
+			this.sendError("Request cancelled.");
+		} else if (axios.isAxiosError(error)) {
+			if (error.code === 'ECONNABORTED') {
+				this.sendError('Sorry, the request to fetch web content timed out. The website may be slow or unavailable.');
 			} else {
-				let errorMessage = `Sorry, an error occurred with the Gemini API: ${error.message}`;
-				// Provide more user-friendly messages for common errors
-				if (error.message && typeof error.message === 'string') {
-					if (error.message.includes('API key not valid')) {
-						errorMessage = 'Your Gemini API key is not valid. Please check it in the VS Code settings (`arcad-ai-assistant.gemini.apiKey`) and ensure it is correct.';
-					} else if (error.message.includes('429')) { // Too many requests
-						errorMessage = 'You have sent too many requests to the Gemini API recently. Please wait a moment and try again.';
-					}
-				}
-				this.sendError(errorMessage);
+				this.sendError(`Sorry, an error occurred while fetching web content: ${error.message}`);
 			}
+		} else {
+			let errorMessage = `Sorry, an error occurred with the Gemini API: ${error.message}`;
+			// Provide more user-friendly messages for common errors
+			if (error.message && typeof error.message === 'string') {
+				if (error.message.includes('API key not valid')) {
+					errorMessage = 'Your Gemini API key is not valid. Please check it in the VS Code settings (`arcad-ai-assistant.gemini.apiKey`) and ensure it is correct.';
+				} else if (error.message.includes('429')) { // Too many requests
+					errorMessage = 'You have sent too many requests to the Gemini API recently. Please wait a moment and try again.';
+				}
+			}
+			this.sendError(errorMessage);
 		}
 	}
 
 	public sendAnswer(answer: string) {
 		if (this._view) {
 			this._view.webview.postMessage({ type: 'addAnswer', value: answer });
+		}
+	}
+
+	public sendAnswerStop() {
+		if (this._view) {
+			this._view.webview.postMessage({ type: 'answerStop' });
 		}
 	}
 
@@ -258,6 +349,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 					<div class="chat-input-container">
 						<textarea id="question-input" class="chat-input" placeholder="Ask about ARCAD products..."></textarea>
 						<button id="ask-button">Ask</button>
+						<!-- 
+							To add a cancel button, you could add the following HTML.
+							The main.js script would need to be updated to show/hide it and send the 'cancelRequest' message.
+							<button id="cancel-button" style="display: none;">Cancel</button>
+						-->
 					</div>
 				</div>
 

@@ -32,10 +32,28 @@ export class GeminiConnector {
      * @returns A promise that resolves to a GenerateContentStreamResult.
      */
     public async getStreamingAnswer(question: string, contextText: string, contextUrl: string): Promise<GenerateContentStreamResult> {
+		const instructions = `
+You are an expert assistant for ARCAD Software products. Your main goal is to answer the user's question based on the provided context.
+
+Here are your instructions:
+1.  Carefully read the user's question and the context below. The context is from ${contextUrl}.
+2.  Provide a clear, concise, and helpful answer to the question using only the information from the context.
+3.  If the context does not contain an answer, state that you couldn't find the information in the provided source. Do not make up information.
+4.  After your main answer, check if the context contains any GitHub URLs.
+5.  If you find one or more GitHub URLs, add a "## Further Reading" section at the end and list them in markdown format (e.g., "Link Text"). If no GitHub links are present, do not add this section.
+
+Context:
+---
+${contextText.substring(0, CONTEXT_MAX_LENGTH)}
+---
+
+Question: "${question}"
+`;
+
         const chatHistory = [
             {
                 role: "user",
-                parts: [{ text: `Based on the following context about ARCAD Software's products, please answer my question. The context is from ${contextUrl}.\n\nContext:\n---\n${contextText.substring(0, CONTEXT_MAX_LENGTH)}\n---\n\nQuestion: "${question}"` }]
+				parts: [{ text: instructions }]
             },
             { role: "model", parts: [{ text: "Answer:" }] }
         ];
