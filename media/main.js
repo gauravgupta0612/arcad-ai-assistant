@@ -31,15 +31,16 @@ window.addEventListener('message', event => {
 
     switch (message.type) {
         case 'updateStatus': {
-            messageHistory.innerHTML = '';
-            addMessage(message.text, 'assistant');
+            const history = document.getElementById('message-history');
+            history.innerHTML = '';
+            addMessage(message.text, 'assistant', false, !message.isConnected);
             const isConnected = message.isConnected;
             questionInput.disabled = !isConnected;
             askButton.disabled = !isConnected;
             if (isConnected) {
                 questionInput.placeholder = 'Ask about ARCAD products...';
             } else {
-                questionInput.placeholder = 'Please set your Gemini API key in settings.';
+                questionInput.placeholder = 'AI Assistant not ready. Check settings.';
             }
             break;
         }
@@ -47,24 +48,26 @@ window.addEventListener('message', event => {
             addMessage('...', 'assistant', true);
             break;
         case 'addAnswer': {
+            let lastMessage = messageHistory.lastElementChild;
             const thinking = document.querySelector('.assistant-message.thinking');
             if (thinking) {
-                // First chunk, replace the "thinking" text
-                thinking.textContent = message.value;
-                thinking.classList.remove('thinking');
-            } else {
-                // Subsequent chunks, or a new message.
-                const messages = document.querySelectorAll('.assistant-message');
-                const lastMessage = messageHistory.lastElementChild;
-
-                // If the last message was from the user, or if there are no messages, create a new assistant message.
-                if (!lastMessage || lastMessage.classList.contains('user-message')) {
-                    addMessage(message.value, 'assistant');
-                } else {
-                    // Otherwise, append to the last message (for streaming).
-                    lastMessage.textContent += message.value;
-                }
+                lastMessage = thinking;
+                lastMessage.classList.remove('thinking');
+                lastMessage.textContent = ''; // Clear "..."
             }
+            if (!lastMessage || !lastMessage.classList.contains('assistant-message') || lastMessage.classList.contains('error-message')) {
+                addMessage('', 'assistant');
+                lastMessage = messageHistory.lastElementChild;
+            }
+            if (!lastMessage.dataset.rawText) {
+                lastMessage.dataset.rawText = '';
+            }
+            lastMessage.dataset.rawText += message.value;
+            lastMessage.innerHTML = lastMessage.dataset.rawText
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+                .replace(/\n/g, '<br>');
+            messageHistory.scrollTop = messageHistory.scrollHeight;
             break;
         }
         case 'addError':
@@ -72,16 +75,19 @@ window.addEventListener('message', event => {
             if (thinking) {
                 thinking.remove();
             }
-            addMessage(message.value, 'assistant', false, true);
+            addMessage(message.value, 'assistant', false, true); // isError = true
             break;
     }
 });
 
-function addMessage(text, type, isThinking = false) {
+function addMessage(text, type, isThinking = false, isError = false) {
     const messageElement = document.createElement('div');
     messageElement.className = `message ${type}-message`;
     if (isThinking) {
         messageElement.classList.add('thinking');
+    }
+    if (isError) {
+        messageElement.classList.add('error-message');
     }
     messageElement.textContent = text;
     messageHistory.appendChild(messageElement);

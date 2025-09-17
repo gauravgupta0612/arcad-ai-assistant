@@ -2,12 +2,19 @@
   "name": "arcad-ai-assistant",
   "displayName": "ARCAD AI Assistant",
   "description": "An AI assistant for ARCAD products.",
+  "publisher": "arcad-software",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.82.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-repo/arcad-ai-assistant.git"
+  },
   "categories": [
-    "Other"
+    "Other",
+    "Chat",
+    "AI"
   ],
   "activationEvents": [
     "onView:arcad-ai-assistant.chatView"
@@ -37,14 +44,19 @@
       "properties": {
         "arcad-ai-assistant.gemini.apiKey": {
           "type": "string",
-          "description": "Your API Key for Google Gemini.",
+          "description": "Your API Key for Google Gemini. This is stored securely.",
           "default": "",
-          "secret": true
+          "format": "password"
         },
         "arcad-ai-assistant.gemini.modelName": {
           "type": "string",
-          "description": "The Gemini model to use (e.g., 'gemini-1.5-flash-latest').",
-          "default": "gemini-2.0-flash"
+          "description": "The Gemini model to use (e.g., 'gemini-1.5-flash-latest', 'gemini-pro').",
+          "default": "gemini-1.5-flash-latest"
+        },
+        "arcad-ai-assistant.product.contextUrl": {
+          "type": "string",
+          "description": "The default URL to use for context if a specific product isn't selected.",
+          "default": "https://www.arcadsoftware.com/arcad/products/"
         }
       }
     }
