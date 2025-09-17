@@ -175,7 +175,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		this.sendAnswerStart();
 
 		try {
-			const { data } = await axios.get(contextUrl, { timeout: 5000 });
+			const { data } = await axios.get(contextUrl, { timeout: 10000 });
 			const $ = cheerio.load(data);
 			const contextText = $('main').text().replace(/\s\s+/g, ' ').trim();
 
@@ -187,12 +187,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				text += chunkText;
 			}
 
-			// After the main answer, send a hyperlink for more information
-			if (text.length > 0) {
-				const linkMarkdown = `\n\nFor more information, visit the product page.`;
-				this.sendAnswer(linkMarkdown);
-			}
-
 			const fullResponse = await result.response;
 			const finishReason = fullResponse.candidates?.[0]?.finishReason;
 			if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
@@ -202,7 +196,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		} catch (error: any) {
 			console.error(error);
 			if (axios.isAxiosError(error)) {
-				this.sendError(`Sorry, an error occurred while fetching web content: ${error.message}`);
+				if (error.code === 'ECONNABORTED') {
+					this.sendError('Sorry, the request to fetch web content timed out after 10 seconds. The website may be slow or unavailable. Please try again later.');
+				} else {
+					this.sendError(`Sorry, an error occurred while fetching web content: ${error.message}`);
+				}
 			} else {
 				let errorMessage = `Sorry, an error occurred with the Gemini API: ${error.message}`;
 				// Provide more user-friendly messages for common errors
