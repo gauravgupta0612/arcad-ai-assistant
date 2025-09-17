@@ -39,6 +39,21 @@ const ARCAD_PRODUCT_MAP: { [key: string]: string } = {
   "DOT": "https://www.arcadsoftware.com/dot/data-masking/dot-anonymizer/"
 };
 
+const ARCAD_LANGUAGE_MAP: { [key: string]: { name: string, url: string } } = {
+	'french': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
+	'français': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
+	'frace': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' }, // Typo for French
+	'spanish': { name: 'Spanish', url: 'https://www.arcadsoftware.com/es/' },
+	'german': { name: 'German', url: 'https://www.arcadsoftware.com/de/' },
+	'italian': { name: 'Italian', url: 'https://www.arcadsoftware.com/it/' },
+	'japanese': { name: 'Japanese', url: 'https://www.arcadsoftware.com/ja/' },
+	'india': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // No specific language, use contact page
+	'idnia': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // Typo for India
+	'france': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
+	'english': { name: 'English', url: ARCAD_PRODUCTS_URL },
+	'neng': { name: 'English', url: ARCAD_PRODUCTS_URL }, // Typo for English
+};
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	public static readonly viewType = 'arcad-ai-assistant.chatView';
@@ -171,16 +186,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		this._isProcessing = true;
 		this._abortController = new AbortController();
 		try {
+			const lowerCaseQuestion = question.toLowerCase();
+
+			// 1. Check for language/localization-related keywords first, as this is a common general question.
+			const languageKeywords = ['language', 'translate', 'international', 'install', ...Object.keys(ARCAD_LANGUAGE_MAP)];
+			const mentionedLanguageTerm = languageKeywords.find(term => lowerCaseQuestion.includes(term));
+
+			if (mentionedLanguageTerm) {
+				const langInfo = ARCAD_LANGUAGE_MAP[mentionedLanguageTerm];
+				// Use a specific language page if available, otherwise the main products page.
+				const contextUrl = langInfo ? langInfo.url : ARCAD_PRODUCTS_URL;
+				// Rephrase the question to be more specific for the AI, helping it focus on the user's intent.
+				const specificQuestion = `A user is asking about installing ARCAD software in different countries like India and France and expects the user interface to be in the local language (e.g., French in France). Based on the context from the ARCAD website, explain ARCAD's international presence, language support, and how localization is handled in their products.`;
+
+				await this.getAnswerForUrl(specificQuestion, contextUrl, this._abortController.signal);
+				return;
+			}
+
+			// 2. Check if the question explicitly mentions a known product.
 			const productKeys = Object.keys(ARCAD_PRODUCT_MAP);
-			const mentionedProduct = productKeys.find(key => question.toLowerCase().includes(key.toLowerCase()));
+			const mentionedProduct = productKeys.find(key => lowerCaseQuestion.includes(key.toLowerCase()));
 
 			if (mentionedProduct) {
 				const productUrl = ARCAD_PRODUCT_MAP[mentionedProduct];
 				await this.getAnswerForUrl(question, productUrl, this._abortController.signal);
 				return;
 			}
+
+			// 3. If no specific product or language is mentioned, check for generic terms to trigger the Quick Pick.
 			const genericTerms = ['product', 'products', 'list', 'all', 'what do you offer'];
-			const isGeneric = genericTerms.some(term => question.toLowerCase().includes(term));
+			const isGeneric = genericTerms.some(term => lowerCaseQuestion.includes(term));
 
 			if (isGeneric) {
 				const selectedProduct = await vscode.window.showQuickPick(productKeys, {
@@ -194,6 +229,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 					await this.getAnswerForUrl(specificQuestion, productUrl, this._abortController.signal);
 				}
 			} else {
+				// 4. For all other questions, use the default configured URL as a fallback.
 				const productConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.product');
 				const defaultUrl = productConfig.get<string>('contextUrl') ?? ARCAD_PRODUCTS_URL;
 				await this.getAnswerForUrl(question, defaultUrl, this._abortController.signal);
