@@ -171,7 +171,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		this._isProcessing = true;
 		this._abortController = new AbortController();
 		try {
-			// 1. Check if the question explicitly mentions a known product.
 			const productKeys = Object.keys(ARCAD_PRODUCT_MAP);
 			const mentionedProduct = productKeys.find(key => question.toLowerCase().includes(key.toLowerCase()));
 
@@ -180,8 +179,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 				await this.getAnswerForUrl(question, productUrl, this._abortController.signal);
 				return;
 			}
-
-			// 2. If no specific product is mentioned, check for generic terms to trigger the Quick Pick.
 			const genericTerms = ['product', 'products', 'list', 'all', 'what do you offer'];
 			const isGeneric = genericTerms.some(term => question.toLowerCase().includes(term));
 
@@ -197,7 +194,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 					await this.getAnswerForUrl(specificQuestion, productUrl, this._abortController.signal);
 				}
 			} else {
-				// 3. For all other questions, use the default configured URL as a fallback.
 				const productConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.product');
 				const defaultUrl = productConfig.get<string>('contextUrl') ?? ARCAD_PRODUCTS_URL;
 				await this.getAnswerForUrl(question, defaultUrl, this._abortController.signal);
@@ -209,43 +205,63 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		}
 	}
 
+	/**
+	 * Wraps the Gemini API call with retry logic for transient errors like model overload.
+	 */
 	private async getAnswerForUrl(question: string, contextUrl: string, signal: AbortSignal): Promise<void> {
 		if (!this._geminiConnector) {
 			this.sendError("AI Assistant is not configured. Please check your API key and model name in the settings.");
 			this.sendAnswerStop();
 			return;
 		}
-
+	
 		this.sendAnswerStart();
-
-		try {
-			// 1. Fetch content from the primary URL. Pass the signal to allow cancellation.
-			let { contextText, finalContextUrl } = await this._getContext(contextUrl, this._abortController!.signal);
-
-			// 2. Get and stream the answer from the AI.
-			const result = await this._geminiConnector.getStreamingAnswer(question, contextText, finalContextUrl);
-			let text = '';
-			for await (const chunk of result.stream) {
-				if (this._abortController?.signal.aborted) {
-					// Stop streaming if a cancellation is requested.
-					break;
+	
+		const MAX_RETRIES = 3;
+		const INITIAL_BACKOFF_MS = 1000;
+	
+		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+			try {
+				// 1. Fetch content from the primary URL. Pass the signal to allow cancellation.
+				let { contextText, finalContextUrl } = await this._getContext(contextUrl, this._abortController!.signal);
+	
+				// 2. Get and stream the answer from the AI.
+				const result = await this._geminiConnector.getStreamingAnswer(question, contextText, finalContextUrl);
+				let text = '';
+				for await (const chunk of result.stream) {
+					if (this._abortController?.signal.aborted) {
+						// Stop streaming if a cancellation is requested.
+						break;
+					}
+					const chunkText = chunk.text();
+					this.sendAnswer(chunkText);
+					text += chunkText;
 				}
-				const chunkText = chunk.text();
-				this.sendAnswer(chunkText);
-				text += chunkText;
+	
+				// 3. Check the final response reason.
+				const fullResponse = await result.response;
+				const finishReason = fullResponse.candidates?.[0]?.finishReason;
+				if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
+					this.sendError(`The AI stopped responding for the following reason: ${finishReason}. This could be due to safety settings or other limitations.`);
+				}
+	
+				// Success, so stop retrying and exit.
+				return;
+			} catch (error: any) {
+				console.error(`Attempt ${attempt} failed:`, error);
+				const isOverloaded = error.message && (error.message.includes('503') || error.message.toLowerCase().includes('model is overloaded'));
+	
+				if (isOverloaded && attempt < MAX_RETRIES) {
+					const backoffTime = INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+					this.sendError(`The AI model is overloaded. Retrying in ${backoffTime / 1000}s... (Attempt ${attempt}/${MAX_RETRIES})`);
+					await new Promise(resolve => setTimeout(resolve, backoffTime));
+				} else {
+					this._handleError(error);
+					return; // Exit after handling the error.
+				}
+			} finally {
+				this.sendAnswerStop(); // This will now correctly run after the final attempt or success.
 			}
-
-			// 3. Check the final response reason.
-			const fullResponse = await result.response;
-			const finishReason = fullResponse.candidates?.[0]?.finishReason;
-			if (finishReason && finishReason !== 'STOP' && finishReason !== 'MAX_TOKENS') {
-				this.sendError(`The AI stopped responding for the following reason: ${finishReason}. This could be due to safety settings or other limitations.`);
-			}
-		} catch (error: any) {
-			console.error(error);
-			this._handleError(error);
-		} finally {
-			this.sendAnswerStop();
 		}
 	}
 
@@ -295,6 +311,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 					errorMessage = 'Your Gemini API key is not valid. Please check it in the VS Code settings (`arcad-ai-assistant.gemini.apiKey`) and ensure it is correct.';
 				} else if (error.message.includes('429')) { // Too many requests
 					errorMessage = 'You have sent too many requests to the Gemini API recently. Please wait a moment and try again.';
+				} else if (error.message.includes('503') || error.message.toLowerCase().includes('model is overloaded')) {
+					errorMessage = 'The AI model is currently overloaded and could not process your request. Please try again in a few moments.';
 				}
 			}
 			this.sendError(errorMessage);
