@@ -145,7 +145,6 @@ export class ChatViewProvider implements WebviewViewProvider {
 		}
 	}
 
-
 	public sendAnswerStart() {
 		if (this._view) {
 			this._view.webview.postMessage({ type: 'answerStart' });
@@ -195,7 +194,6 @@ export class ChatViewProvider implements WebviewViewProvider {
       }
     }
 
-    // Well-being queries with product context
     const wellbeingPatterns = [
       'how are you', 'how r u', 'how you doing',
       'how do you do', 'how are things', 'how is it going'
@@ -207,7 +205,6 @@ export class ChatViewProvider implements WebviewViewProvider {
       };
     }
 
-    // Enhanced capability queries with specific product mentions
     const capabilityPatterns = [
       'what can you do', 'what do you do', 'help me',
       'how can you help', 'what are your capabilities'
@@ -225,7 +222,6 @@ export class ChatViewProvider implements WebviewViewProvider {
       };
     }
 
-    // Gratitude expressions with follow-up
     if (normalizedQuestion.includes('thank') || normalizedQuestion.includes('thanks')) {
       return {
         isConversational: true,
@@ -233,7 +229,6 @@ export class ChatViewProvider implements WebviewViewProvider {
       };
     }
 
-    // Compound greetings with product context
     const compoundGreetings = [
       'hi there', 'hello there', 'hey there',
       'nice to meet you', 'pleasure to meet you'
@@ -250,7 +245,6 @@ export class ChatViewProvider implements WebviewViewProvider {
       };
     }
 
-    // No conversational pattern matched
     return { isConversational: false };
   }
 
