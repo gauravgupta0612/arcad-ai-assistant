@@ -1,51 +1,17 @@
 import * as vscode from 'vscode';
-import axios, { AxiosError } from 'axios';
+import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { GeminiConnector } from './GeminiConnector';
 import { CancellationToken, Uri, WebviewView, WebviewViewProvider, WebviewViewResolveContext } from 'vscode';
-import { WebviewMessage, WebviewMessageType } from './interfaces/WebviewMessage';
-import { QuestionCategory } from './interfaces/Question';
-import { ContextResult, ConversationalResult } from './interfaces/Result';
 import { conversationTemplates } from './templates/conversationTemplates';
 import { ARCAD_PRODUCTS, ARCAD_PRODUCT_MAP } from './data/products';
 import { ProductCategory, ProductInfo } from './interfaces/Product';
 import { ChatUI } from './ui/components/ChatUI';
+import { QuestionProcessor } from './services/QuestionProcessor';
+import { URLContentCache } from './utils/URLContentCache';
 
-// Constants
-export class Constants {
-    static readonly URLS = {
-        PRODUCTS: 'https://www.arcadsoftware.com/arcad/products/',
-        GITHUB: 'https://github.com/ARCAD-Software',
-        GITHUB_FALLBACK: 'https://github.com/ARCAD-Software'
-    };
-
-    static readonly CONTENT = {
-        MIN_LENGTH: 200,
-        MAX_RETRIES: 3,
-        INITIAL_BACKOFF_MS: 1000,
-        TIMEOUT_MS: 10000
-    };
-
-    static readonly ARCAD_PRODUCTS_URL = 'https://www.arcadsoftware.com/arcad/products/';
-}
-
-
-
-
-const ARCAD_LANGUAGE_MAP: Record<string, { name: string, url: string }> = {
-    'french': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
-    'français': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
-    'frace': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' }, // Typo for French
-    'spanish': { name: 'Spanish', url: 'https://www.arcadsoftware.com/es/' },
-    'german': { name: 'German', url: 'https://www.arcadsoftware.com/de/' },
-    'italian': { name: 'Italian', url: 'https://www.arcadsoftware.com/it/' },
-    'japanese': { name: 'Japanese', url: 'https://www.arcadsoftware.com/ja/' },
-    'india': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // No specific language, use contact page
-    'idnia': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // Typo for India
-    'france': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
-    'english': { name: 'English', url: Constants.URLS.PRODUCTS },
-    'neng': { name: 'English', url: Constants.URLS.PRODUCTS }, // Typo for English
-};
+import { CONTENT, URLS } from './config/constants';
+import { ARCAD_LANGUAGE_MAP } from './config/language-map';
 
 export class ChatViewProvider implements WebviewViewProvider {
     public static readonly viewType = 'arcad-ai-assistant.chatView';
@@ -122,9 +88,6 @@ export class ChatViewProvider implements WebviewViewProvider {
 		webviewView.webview.onDidReceiveMessage(async (data) => {
 			switch (data.type) {
 				case 'addQuestion':
-					// This is a "fire-and-forget" call. We don't need to wait for it to finish
-					// because the method handles sending updates and errors to the webview itself.
-					// Adding a .catch() here is a good practice for any unexpected errors.
 					this.handleQuestion(data.value).catch(err => {
 						console.error("An unexpected error occurred in the message handler:", err);
 						this.sendError("A critical, unexpected error occurred. Please check the extension's developer logs for more details.");
@@ -189,52 +152,7 @@ export class ChatViewProvider implements WebviewViewProvider {
 		}
 	}
 
-  /**
-   * Categorizes the question to determine the best way to handle it
-   * @param question The user's question
-   * @returns The category of the question
-   */
-  private categorizeQuestion(question: string): {
-    type: 'product-specific' | 'technical' | 'integration' | 'general' | 'language';
-    product?: string;
-    language?: string;
-  } {
-    const lowerQuestion = question.toLowerCase();
-    
-    // Check for language/localization first
-    const languageKeywords = Object.keys(ARCAD_LANGUAGE_MAP);
-    const language = languageKeywords.find(lang => lowerQuestion.includes(lang.toLowerCase()));
-    if (language) {
-      return { type: 'language', language };
-    }
-    
-    // Check for specific products
-    const products = Object.keys(ARCAD_PRODUCT_MAP);
-    const product = products.find(prod => lowerQuestion.includes(prod.toLowerCase()));
-    if (product) {
-      return { type: 'product-specific', product };
-    }
-    
-    // Check for technical questions
-    const technicalTerms = [
-      'how to', 'implement', 'configure', 'setup', 'install', 'deploy',
-      'documentation', 'guide', 'tutorial', 'example', 'requirement'
-    ];
-    if (technicalTerms.some(term => lowerQuestion.includes(term))) {
-      return { type: 'technical' };
-    }
-    
-    // Check for integration questions
-    const integrationTerms = [
-      'integrate', 'connection', 'workflow', 'pipeline', 'devops',
-      'jenkins', 'github', 'gitlab', 'ci/cd', 'automation'
-    ];
-    if (integrationTerms.some(term => lowerQuestion.includes(term))) {
-      return { type: 'integration' };
-    }
-    
-    return { type: 'general' };
-  }
+  private _questionProcessor: QuestionProcessor = new QuestionProcessor();
 
   private isConversationalQuery(question: string): { isConversational: boolean; response?: string } {
     // Convert to lowercase and remove extra spaces
@@ -353,7 +271,7 @@ export class ChatViewProvider implements WebviewViewProvider {
         return;
       }
 
-      const questionCategory = this.categorizeQuestion(question);
+      const questionCategory = this._questionProcessor.categorizeQuestion(question);
       const lowerCaseQuestion = question.toLowerCase();			// 1. Check for language/localization-related keywords first, as this is a common general question.
 			const languageKeywords = ['language', 'translate', 'international', 'install', ...Object.keys(ARCAD_LANGUAGE_MAP)];
 			const mentionedLanguageTerm = languageKeywords.find(term => lowerCaseQuestion.includes(term));
@@ -361,7 +279,7 @@ export class ChatViewProvider implements WebviewViewProvider {
 			if (mentionedLanguageTerm && !lowerCaseQuestion.includes('product')) {
 				const langInfo = ARCAD_LANGUAGE_MAP[mentionedLanguageTerm];
 				// Use a specific language page if available, otherwise the main products page.
-				const contextUrl = langInfo ? langInfo.url : Constants.ARCAD_PRODUCTS_URL;
+				const contextUrl = langInfo ? langInfo.url : URLS.PRODUCTS;
 				// Rephrase the question to be more specific for the AI, helping it focus on the user's intent.
 				const specificQuestion = `A user is asking about installing ARCAD software in different countries like India and France and expects the user interface to be in the local language (e.g., French in France). Based on the context from the ARCAD website, explain ARCAD's international presence, language support, and how localization is handled in their products.`;
 
@@ -599,7 +517,7 @@ export class ChatViewProvider implements WebviewViewProvider {
 			} else {
 				// 4. For all other questions, use the default configured URL as a fallback.
 				const productConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.product');
-				const defaultUrl = productConfig.get<string>('contextUrl') ?? Constants.ARCAD_PRODUCTS_URL;
+				const defaultUrl = productConfig.get<string>('contextUrl') ?? URLS.PRODUCTS;
 				await this.getAnswerForUrl(question, defaultUrl, this._abortController.signal);
 			}
 		} finally {
@@ -677,25 +595,34 @@ export class ChatViewProvider implements WebviewViewProvider {
 		let contextText = await this._fetchAndParseUrl(initialUrl, signal, 'main');
 
 		// 2. If content is insufficient, try the GitHub fallback URL
-		if (contextText.length < Constants.CONTENT.MIN_LENGTH) {
+		if (contextText.length < CONTENT.MIN_LENGTH) {
 			this.sendAnswer(`*Primary source had limited information. Fetching from ARCAD's GitHub for more context...*\n\n`);
-			const fallbackText = await this._fetchAndParseUrl(Constants.URLS.GITHUB_FALLBACK, signal, '#org-repositories');
-			return { contextText: fallbackText, finalContextUrl: Constants.URLS.GITHUB_FALLBACK };
+			const fallbackText = await this._fetchAndParseUrl(URLS.GITHUB_FALLBACK, signal, '#org-repositories');
+			return { contextText: fallbackText, finalContextUrl: URLS.GITHUB_FALLBACK };
 		}
 
 		return { contextText, finalContextUrl: initialUrl };
 	}
 
-	/**
-	 * Fetches content from a URL and parses the text from a given selector.
-	 */
-	private async _fetchAndParseUrl(url: string, signal: AbortSignal, selector: string): Promise<string> {
-		const { data } = await axios.get(url, { timeout: 10000, signal });
-		const $ = cheerio.load(data);
-		return $(selector).text().replace(/\s\s+/g, ' ').trim();
-	}
+    /**
+     * Fetches content from a URL and parses the text from a given selector.
+     * Uses caching to improve performance and reduce network requests.
+     */
+    private async _fetchAndParseUrl(url: string, signal: AbortSignal, selector: string): Promise<string> {
+        const cache = URLContentCache.getInstance();
+        const cachedContent = cache.get(url);
+        
+        if (cachedContent) {
+            return cachedContent;
+        }
 
-	/**
+        const { data } = await axios.get(url, { timeout: CONTENT.TIMEOUT_MS, signal });
+        const $ = cheerio.load(data);
+        const content = $(selector).text().replace(/\s\s+/g, ' ').trim();
+        
+        cache.set(url, content);
+        return content;
+    }	/**
 	 * Centralized error handler to send messages to the webview.
 	 */
 	private _handleError(error: any) {
