@@ -1,73 +1,69 @@
 import * as vscode from 'vscode';
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 import * as cheerio from 'cheerio';
 import { GeminiConnector } from './GeminiConnector';
+import { CancellationToken, Uri, WebviewView, WebviewViewProvider, WebviewViewResolveContext } from 'vscode';
+import { WebviewMessage, WebviewMessageType } from './interfaces/WebviewMessage';
+import { QuestionCategory } from './interfaces/Question';
+import { ContextResult, ConversationalResult } from './interfaces/Result';
+import { conversationTemplates } from './templates/conversationTemplates';
+import { ARCAD_PRODUCTS, ARCAD_PRODUCT_MAP } from './data/products';
+import { ProductCategory, ProductInfo } from './interfaces/Product';
 
-const ARCAD_PRODUCTS_URL = 'https://www.arcadsoftware.com/arcad/products/';
-const GITHUB_FALLBACK_URL = 'https://github.com/ARCAD-Software';
-const MIN_CONTENT_LENGTH = 200; // The minimum number of characters to consider the content sufficient.
+// Constants
+export class Constants {
+    static readonly URLS = {
+        PRODUCTS: 'https://www.arcadsoftware.com/arcad/products/',
+        GITHUB: 'https://github.com/ARCAD-Software',
+        GITHUB_FALLBACK: 'https://github.com/ARCAD-Software'
+    };
 
-const ARCAD_PRODUCT_MAP: { [key: string]: string } = {
-  "ARCAD-Skipper": "https://www.arcadsoftware.com/products/arcad-skipper/",  
-  "ARCAD-Verifier": "https://www.arcadsoftware.com/products/arcad-verifier/",  
-  "ARCAD-Transformer": "https://www.arcadsoftware.com/products/arcad-transformer/",  
-  "ARCAD-Listener": "https://www.arcadsoftware.com/products/arcad-listener/",  
-  "ARCAD-Observer": "https://www.arcadsoftware.com/products/arcad-observer/",  
-  "DROPS": "https://www.arcadsoftware.com/products/drops-devops/",  
-  "ARCAD-CodeChecker": "https://www.arcadsoftware.com/products/arcad-codechecker/",  
-  "ARCAD-API": "https://www.arcadsoftware.com/products/arcad-api/",  
-  "ARCAD-Builder": "https://www.arcadsoftware.com/products/arcad-builder/",  
-  "ARCAD-Deliver": "https://www.arcadsoftware.com/products/arcad-deliver/",  
-  "ARCAD-Jira": "https://www.arcadsoftware.com/products/arcad-jira/",  
-  "ARCAD-Testing": "https://www.arcadsoftware.com/products/arcad-testing/",
+    static readonly CONTENT = {
+        MIN_LENGTH: 200,
+        MAX_RETRIES: 3,
+        INITIAL_BACKOFF_MS: 1000,
+        TIMEOUT_MS: 10000
+    };
 
-  // Additional / newer products & tools
-  "ARCAD Discover": "https://www.arcadsoftware.com/arcad/products/arcad-discover/",  
-  "ARCAD Audit": "https://www.arcadsoftware.com/arcad/products/arcad-audit/",
-  "ARCAD Dashboards": "https://www.arcadsoftware.com/arcad/products/arcad-dashboards/",  
-  "ARCAD iUnit": "https://www.arcadsoftware.com/arcad/products/arcad-iunit-ibm-i-unit-testing/",  
-  "ARCAD Transformer DB": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-db-database-modernization/",  
-  "ARCAD Transformer RPG": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-rpg-free-format-rpg-conversion/",  
-  "ARCAD Transformer Microservices": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-microservices-rpg-refactoring-and-web-service-creation/",  
-  "ARCAD Transformer Field": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-field-change-field-sizes-and-types/",  
-  "ARCAD Transformer Synon": "https://www.arcadsoftware.com/arcad/products/arcad-transformer-synon-conversion/",  
-  "DOT Anonymizer": "https://www.arcadsoftware.com/dot/data-masking/dot-anonymizer/",  
-  "ARCAD Migration Kit": "https://www.arcadsoftware.com/arcad/products/arcad-migration-kit-migrate-to-a-modern-devops-environment/",  
+    static readonly ARCAD_PRODUCTS_URL = 'https://www.arcadsoftware.com/arcad/products/';
+}
 
-  // Optional / non-product special tools or pages
-  "Careers": "https://www.arcadsoftware.com/about/job-offers/",
-  "DOT": "https://www.arcadsoftware.com/dot/data-masking/dot-anonymizer/"
+
+
+
+const ARCAD_LANGUAGE_MAP: Record<string, { name: string, url: string }> = {
+    'french': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
+    'français': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
+    'frace': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' }, // Typo for French
+    'spanish': { name: 'Spanish', url: 'https://www.arcadsoftware.com/es/' },
+    'german': { name: 'German', url: 'https://www.arcadsoftware.com/de/' },
+    'italian': { name: 'Italian', url: 'https://www.arcadsoftware.com/it/' },
+    'japanese': { name: 'Japanese', url: 'https://www.arcadsoftware.com/ja/' },
+    'india': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // No specific language, use contact page
+    'idnia': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // Typo for India
+    'france': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
+    'english': { name: 'English', url: Constants.URLS.PRODUCTS },
+    'neng': { name: 'English', url: Constants.URLS.PRODUCTS }, // Typo for English
 };
 
-const ARCAD_LANGUAGE_MAP: { [key: string]: { name: string, url: string } } = {
-	'french': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
-	'français': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
-	'frace': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' }, // Typo for French
-	'spanish': { name: 'Spanish', url: 'https://www.arcadsoftware.com/es/' },
-	'german': { name: 'German', url: 'https://www.arcadsoftware.com/de/' },
-	'italian': { name: 'Italian', url: 'https://www.arcadsoftware.com/it/' },
-	'japanese': { name: 'Japanese', url: 'https://www.arcadsoftware.com/ja/' },
-	'india': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // No specific language, use contact page
-	'idnia': { name: 'India', url: 'https://www.arcadsoftware.com/about/contact-us/' }, // Typo for India
-	'france': { name: 'French', url: 'https://www.arcadsoftware.com/fr/' },
-	'english': { name: 'English', url: ARCAD_PRODUCTS_URL },
-	'neng': { name: 'English', url: ARCAD_PRODUCTS_URL }, // Typo for English
-};
+export class ChatViewProvider implements WebviewViewProvider {
+    public static readonly viewType = 'arcad-ai-assistant.chatView';
 
-export class ChatViewProvider implements vscode.WebviewViewProvider {
+    private _view?: WebviewView;
+    private _geminiConnector?: GeminiConnector;
+    private _disposables: vscode.Disposable[] = [];
+    private _abortController: AbortController | null = null;
+    private _isProcessing: boolean = false;
 
-	public static readonly viewType = 'arcad-ai-assistant.chatView';
+    private getRandomResponse(responses: string[]): string {
+      const index = Math.floor(Math.random() * responses.length);
+      return responses[index];
+    }
 
-	private _view?: vscode.WebviewView;
-	private _geminiConnector?: GeminiConnector;
-	private _disposables: vscode.Disposable[] = [];
-	private _abortController: AbortController | null = null;
-	private _isProcessing: boolean = false;
+    private responseTemplates = conversationTemplates;
 
-	constructor(
-		private readonly _extensionUri: vscode.Uri,
-	) {
-		this._initializeGeminiClient();
+    constructor(private readonly _extensionUri: Uri) {
+      this._initializeGeminiClient();
 
 		// Listen for configuration changes
 		vscode.workspace.onDidChangeConfiguration(e => {
@@ -101,9 +97,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	public resolveWebviewView(
-		webviewView: vscode.WebviewView,
-		context: vscode.WebviewViewResolveContext,
-		_token: vscode.CancellationToken,
+		webviewView: WebviewView,
+		context: WebviewViewResolveContext,
+		_token: CancellationToken,
 	) {
 		this._view = webviewView;
 
@@ -155,7 +151,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			} else if (!this._geminiConnector) {
 				text = "Failed to initialize AI Assistant. Check API key and model name in settings.";
 			} else {
-				text = "Hello! I'm the ARCAD AI Assistant. How can I help you today?";
+				text = "👋 Hello! I'm your ARCAD AI Assistant, specialized in IBM i modernization and DevOps solutions. I can help you with:\n\n" +
+					"• Understanding ARCAD Software products and features\n" +
+					"• Technical information about modernization and DevOps\n" +
+					"• Best practices and implementation guidance\n" +
+					"• Integration scenarios and solutions\n\n" +
+					"How can I assist you today?";
 				isConnected = true;
 			}
 			this._view.webview.postMessage({
@@ -166,36 +167,198 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		}
 	}
 
+	public clearChat() {
+		if (this._view) {
+			if (this._isProcessing && this._abortController) {
+				this._abortController.abort();
+			}
+
+			this._view.webview.postMessage({ type: 'clearChat' });
+
+			this.sendStatus();
+		}
+	}
+
+
 	public sendAnswerStart() {
 		if (this._view) {
 			this._view.webview.postMessage({ type: 'answerStart' });
 		}
 	}
 
-	/**
-	 * Handles an incoming question from the user.
-	 * It decides whether to ask for product clarification or answer directly.
-	 * @param question The user's question.
-	 */
-	private async handleQuestion(question: string): Promise<void> {
-		if (this._isProcessing) {
-			this.sendError("Please wait, your previous question is still being processed.");
-			return;
-		}
+  /**
+   * Categorizes the question to determine the best way to handle it
+   * @param question The user's question
+   * @returns The category of the question
+   */
+  private categorizeQuestion(question: string): {
+    type: 'product-specific' | 'technical' | 'integration' | 'general' | 'language';
+    product?: string;
+    language?: string;
+  } {
+    const lowerQuestion = question.toLowerCase();
+    
+    // Check for language/localization first
+    const languageKeywords = Object.keys(ARCAD_LANGUAGE_MAP);
+    const language = languageKeywords.find(lang => lowerQuestion.includes(lang.toLowerCase()));
+    if (language) {
+      return { type: 'language', language };
+    }
+    
+    // Check for specific products
+    const products = Object.keys(ARCAD_PRODUCT_MAP);
+    const product = products.find(prod => lowerQuestion.includes(prod.toLowerCase()));
+    if (product) {
+      return { type: 'product-specific', product };
+    }
+    
+    // Check for technical questions
+    const technicalTerms = [
+      'how to', 'implement', 'configure', 'setup', 'install', 'deploy',
+      'documentation', 'guide', 'tutorial', 'example', 'requirement'
+    ];
+    if (technicalTerms.some(term => lowerQuestion.includes(term))) {
+      return { type: 'technical' };
+    }
+    
+    // Check for integration questions
+    const integrationTerms = [
+      'integrate', 'connection', 'workflow', 'pipeline', 'devops',
+      'jenkins', 'github', 'gitlab', 'ci/cd', 'automation'
+    ];
+    if (integrationTerms.some(term => lowerQuestion.includes(term))) {
+      return { type: 'integration' };
+    }
+    
+    return { type: 'general' };
+  }
 
-		this._isProcessing = true;
-		this._abortController = new AbortController();
-		try {
-			const lowerCaseQuestion = question.toLowerCase();
+  private isConversationalQuery(question: string): { isConversational: boolean; response?: string } {
+    // Convert to lowercase and remove extra spaces
+    const normalizedQuestion = question.toLowerCase().trim()
+      .replace(/[.,!?]/g, '')  // Remove punctuation
+      .replace(/\s+/g, ' ');   // Normalize whitespace
 
-			// 1. Check for language/localization-related keywords first, as this is a common general question.
+    // Enhanced greeting patterns with context awareness
+    const simpleGreetings = ['hi', 'hey', 'hello', 'yo', 'hola', 'greetings', 'howdy', 'hai'];
+    const isSimpleGreeting = simpleGreetings.some(greeting => 
+      normalizedQuestion === greeting || 
+      normalizedQuestion.startsWith(`${greeting} `) || 
+      normalizedQuestion.endsWith(` ${greeting}`)
+    );
+    
+    if (isSimpleGreeting) {
+      // Use time-aware greeting for more natural responses
+      const hour = new Date().getHours();
+      const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+      return {
+        isConversational: true,
+        response: `${this.getRandomResponse(this.responseTemplates.timeSpecific[timeOfDay])} I'm an ARCAD AI Assistant specialized in IBM i modernization and DevOps solutions. How can I help you today?`
+      };
+    }
+
+    // Time-based greetings with context
+    const timeBasedGreetings: Record<keyof typeof this.responseTemplates.timeSpecific, string[]> = {
+      morning: ['morning', 'good morning'],
+      afternoon: ['afternoon', 'good afternoon'],
+      evening: ['evening', 'good evening', 'night', 'good night']
+    };
+
+    for (const [timeOfDay, patterns] of Object.entries(timeBasedGreetings)) {
+      if (patterns.some(pattern => normalizedQuestion.includes(pattern))) {
+        const tod = timeOfDay as keyof typeof this.responseTemplates.timeSpecific;
+        return {
+          isConversational: true,
+          response: `${this.getRandomResponse(this.responseTemplates.timeSpecific[tod])} I'm here to help with any questions about ARCAD Software's solutions.`
+        };
+      }
+    }
+
+    // Well-being queries with product context
+    const wellbeingPatterns = [
+      'how are you', 'how r u', 'how you doing',
+      'how do you do', 'how are things', 'how is it going'
+    ];
+    if (wellbeingPatterns.some(pattern => normalizedQuestion.includes(pattern))) {
+      return {
+        isConversational: true,
+        response: `${this.getRandomResponse(this.responseTemplates.howAreYou)} I'm ready to assist you with any questions about ARCAD's products, IBM i modernization, or DevOps solutions.`
+      };
+    }
+
+    // Enhanced capability queries with specific product mentions
+    const capabilityPatterns = [
+      'what can you do', 'what do you do', 'help me',
+      'how can you help', 'what are your capabilities'
+    ];
+    if (capabilityPatterns.some(pattern => normalizedQuestion.includes(pattern))) {
+      return {
+        isConversational: true,
+        response: "I'm an AI assistant specialized in ARCAD Software's solutions. I can help you with:\n\n" +
+          "• Detailed information about ARCAD products and features\n" +
+          "• Technical guidance on IBM i modernization\n" +
+          "• DevOps implementation strategies\n" +
+          "• Best practices for application modernization\n" +
+          "• Integration scenarios and solutions\n\n" +
+          "What specific area would you like to know more about?"
+      };
+    }
+
+    // Gratitude expressions with follow-up
+    if (normalizedQuestion.includes('thank') || normalizedQuestion.includes('thanks')) {
+      return {
+        isConversational: true,
+        response: `${this.getRandomResponse(this.responseTemplates.gratitude)} Is there anything else you'd like to know about ARCAD's solutions?`
+      };
+    }
+
+    // Compound greetings with product context
+    const compoundGreetings = [
+      'hi there', 'hello there', 'hey there',
+      'nice to meet you', 'pleasure to meet you'
+    ];
+    if (compoundGreetings.some(pattern => normalizedQuestion.includes(pattern))) {
+      return {
+        isConversational: true,
+        response: "Hello! I'm your ARCAD AI Assistant. I specialize in providing information about:\n\n" +
+          "• ARCAD Software's product suite\n" +
+          "• IBM i modernization solutions\n" +
+          "• DevOps and CI/CD implementation\n" +
+          "• Technical specifications and features\n\n" +
+          "How can I assist you today?"
+      };
+    }
+
+    // No conversational pattern matched
+    return { isConversational: false };
+  }
+
+  private async handleQuestion(question: string): Promise<void> {
+    if (this._isProcessing) {
+      this.sendError("Please wait, your previous question is still being processed.");
+      return;
+    }
+
+    this._isProcessing = true;
+    this._abortController = new AbortController();
+    try {
+      // Always check for conversational queries first
+      const conversationalCheck = this.isConversationalQuery(question);
+      if (conversationalCheck.isConversational && conversationalCheck.response) {
+        this.sendAnswer(conversationalCheck.response);
+        this._isProcessing = false;
+        return;
+      }
+
+      const questionCategory = this.categorizeQuestion(question);
+      const lowerCaseQuestion = question.toLowerCase();			// 1. Check for language/localization-related keywords first, as this is a common general question.
 			const languageKeywords = ['language', 'translate', 'international', 'install', ...Object.keys(ARCAD_LANGUAGE_MAP)];
 			const mentionedLanguageTerm = languageKeywords.find(term => lowerCaseQuestion.includes(term));
 
-			if (mentionedLanguageTerm) {
+			if (mentionedLanguageTerm && !lowerCaseQuestion.includes('product')) {
 				const langInfo = ARCAD_LANGUAGE_MAP[mentionedLanguageTerm];
 				// Use a specific language page if available, otherwise the main products page.
-				const contextUrl = langInfo ? langInfo.url : ARCAD_PRODUCTS_URL;
+				const contextUrl = langInfo ? langInfo.url : Constants.ARCAD_PRODUCTS_URL;
 				// Rephrase the question to be more specific for the AI, helping it focus on the user's intent.
 				const specificQuestion = `A user is asking about installing ARCAD software in different countries like India and France and expects the user interface to be in the local language (e.g., French in France). Based on the context from the ARCAD website, explain ARCAD's international presence, language support, and how localization is handled in their products.`;
 
@@ -207,31 +370,233 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 			const productKeys = Object.keys(ARCAD_PRODUCT_MAP);
 			const mentionedProduct = productKeys.find(key => lowerCaseQuestion.includes(key.toLowerCase()));
 
-			if (mentionedProduct) {
-				const productUrl = ARCAD_PRODUCT_MAP[mentionedProduct];
-				await this.getAnswerForUrl(question, productUrl, this._abortController.signal);
+			// Handle any product-related queries
+			const isProductQuery = lowerCaseQuestion.includes('product') || 
+				lowerCaseQuestion.includes('what is') || 
+				lowerCaseQuestion.includes('tell me about') ||
+				lowerCaseQuestion.includes('how many') ||
+				lowerCaseQuestion.includes('list') ||
+				lowerCaseQuestion.includes('show me');
+
+			if (isProductQuery) {
+				// First check if specific products are mentioned
+				const products = Object.keys(ARCAD_PRODUCTS);
+				const mentionedProducts = products.filter(prod => {
+					const normalizedProd = prod.toLowerCase().replace(/[-\s]/g, ''); // Remove hyphens and spaces
+					const normalizedQuestion = lowerCaseQuestion.replace(/[-\s]/g, ''); // Remove hyphens and spaces
+					return normalizedQuestion.includes(normalizedProd);
+				});
+
+				if (mentionedProducts.length > 0) {
+					// Found specific product(s) mentioned in the question
+					for (const mentionedProduct of mentionedProducts) {
+						const productInfo = ARCAD_PRODUCTS[mentionedProduct];
+						if (productInfo) {
+							let response = `**${mentionedProduct}**\n\n`;
+							response += `${productInfo.description}\n\n`;
+							response += `**Category:** ${productInfo.category}\n\n`;
+							
+							response += "**Key Features:**\n";
+							productInfo.keyFeatures.forEach(feature => {
+								response += `- ${feature}\n`;
+							});
+							response += "\n";
+
+							if (productInfo.technicalDetails) {
+								if (productInfo.technicalDetails.platforms) {
+									response += "**Supported Platforms:**\n";
+									productInfo.technicalDetails.platforms.forEach(platform => {
+										response += `- ${platform}\n`;
+									});
+									response += "\n";
+								}
+								if (productInfo.technicalDetails.integrations) {
+									response += "**Integrations:**\n";
+									productInfo.technicalDetails.integrations.forEach(integration => {
+										response += `- ${integration}\n`;
+									});
+									response += "\n";
+								}
+							}
+
+							if (productInfo.relatedProducts && productInfo.relatedProducts.length > 0) {
+								response += "**Related Products:**\n";
+								productInfo.relatedProducts.forEach(related => {
+									response += `- ${related}\n`;
+								});
+								response += "\n";
+							}
+
+							response += `For more details, visit: ${productInfo.url}\n\n`;
+							this.sendAnswer(response);
+						}
+					}
+					return;
+				} else {
+					// No specific product mentioned, show available products
+					let response = "Here are ARCAD's products by category:\n\n";
+					
+					// Group products by category
+					const productsByCategory = new Map<ProductCategory, ProductInfo[]>();
+					Object.entries(ARCAD_PRODUCTS).forEach(([name, info]) => {
+						if (!productsByCategory.has(info.category)) {
+							productsByCategory.set(info.category, []);
+						}
+						productsByCategory.get(info.category)!.push({...info, name});
+					});
+
+					// List products with descriptions
+					productsByCategory.forEach((products, category) => {
+						response += `**${category}**\n`;
+						products.forEach(product => {
+							response += `• **${product.name}**: ${product.description}\n`;
+						});
+						response += "\n";
+					});
+
+					response += "To learn more about a specific product, just ask:\n";
+					response += "- 'Tell me about [Product Name]'\n";
+					response += "- 'What is [Product Name]?'\n";
+					response += "- 'What are the features of [Product Name]?'\n";
+
+					this.sendAnswer(response);
+					return;
+				}
+			}
+
+			// 3. Handle product-related queries more intelligently
+			// Check for product listing requests
+			const explicitListRequest = ['list products', 'show products', 'what products', 'which products'].some(
+				phrase => lowerCaseQuestion.includes(phrase)
+			);
+			
+			const isProductCount = lowerCaseQuestion.includes('how many products') || 
+				(lowerCaseQuestion.includes('number of') && lowerCaseQuestion.includes('product'));
+
+			if (isProductCount || explicitListRequest) {
+				// Group products by category
+				const productsByCategory = new Map<ProductCategory, ProductInfo[]>();
+				
+				Object.entries(ARCAD_PRODUCTS).forEach(([name, info]) => {
+					if (!productsByCategory.has(info.category)) {
+						productsByCategory.set(info.category, []);
+					}
+					productsByCategory.get(info.category)!.push({...info, name});
+				});
+
+				const totalProducts = Object.keys(ARCAD_PRODUCTS).length;
+				let response = `ARCAD Software offers ${totalProducts} powerful products for IBM i modernization and DevOps solutions.\n\n`;
+				response += "Here's an overview of our products by category:\n\n";
+
+				productsByCategory.forEach((products, category) => {
+					response += `**${category}**\n`;
+					products.forEach(product => {
+						response += `- **${product.name}**: ${product.description}\n`;
+					});
+					response += "\n";
+				});
+
+				response += "Would you like to know more about any specific product? Just ask!\n";
+				response += "For example:\n";
+				response += "- 'Tell me more about ARCAD-Skipper'\n";
+				response += "- 'What are the features of ARCAD-Observer?'\n";
+				response += "- 'Compare ARCAD-Transformer with ARCAD-CodeChecker'\n";
+
+				this.sendAnswer(response);
 				return;
 			}
 
-			// 3. If no specific product or language is mentioned, check for generic terms to trigger the Quick Pick.
-			const genericTerms = ['product', 'products', 'list', 'all', 'what do you offer'];
-			const isGeneric = genericTerms.some(term => lowerCaseQuestion.includes(term));
+			const isProductComparison = lowerCaseQuestion.includes('compare') || 
+				(lowerCaseQuestion.includes('difference') && lowerCaseQuestion.includes('between')) ||
+				(lowerCaseQuestion.includes('vs') || lowerCaseQuestion.includes('versus'));
 
-			if (isGeneric) {
-				const selectedProduct = await vscode.window.showQuickPick(productKeys, {
-					placeHolder: "Which ARCAD product are you interested in?",
-					title: "Select a Product"
+			// Handle product comparisons directly in chat
+			if (isProductComparison) {
+				// Extract product names if they are mentioned in the question
+				const productMentions = productKeys.filter(key => {
+					const normalizedKey = key.toLowerCase().replace(/[-\s]/g, '');
+					const normalizedQuestion = lowerCaseQuestion.replace(/[-\s]/g, '');
+					return normalizedQuestion.includes(normalizedKey);
 				});
 
-				if (selectedProduct) {
-					const productUrl = ARCAD_PRODUCT_MAP[selectedProduct];
-					const specificQuestion = `Please provide a detailed summary of the ARCAD product: ${selectedProduct}.`;
-					await this.getAnswerForUrl(specificQuestion, productUrl, this._abortController.signal);
+				if (productMentions.length >= 2) {
+					// Get the first two mentioned products for comparison
+					const product1 = productMentions[0];
+					const product2 = productMentions[1];
+					
+					const product1Info = ARCAD_PRODUCTS[product1];
+					const product2Info = ARCAD_PRODUCTS[product2];
+
+					let response = `Let me compare **${product1}** and **${product2}** for you:\n\n`;
+					
+					// Compare categories
+					response += "**Categories:**\n";
+					response += `- ${product1}: ${product1Info.category}\n`;
+					response += `- ${product2}: ${product2Info.category}\n\n`;
+
+					// Compare descriptions
+					response += "**Purpose:**\n";
+					response += `- ${product1}: ${product1Info.description}\n`;
+					response += `- ${product2}: ${product2Info.description}\n\n`;
+
+					// Compare key features
+					response += "**Key Features Comparison:**\n\n";
+					response += `*${product1}:*\n`;
+					product1Info.keyFeatures.forEach(feature => {
+						response += `- ${feature}\n`;
+					});
+					response += `\n*${product2}:*\n`;
+					product2Info.keyFeatures.forEach(feature => {
+						response += `- ${feature}\n`;
+					});
+					response += "\n";
+
+					// Add links for more information
+					response += "For more detailed information:\n";
+					response += `- ${product1}: ${product1Info.url}\n`;
+					response += `- ${product2}: ${product2Info.url}\n`;
+
+					this.sendAnswer(response);
+				} else {
+					// No specific products mentioned, show comparison guide
+					let response = "I can help you compare ARCAD products. Here's how to ask for comparisons:\n\n";
+					response += "1. Compare specific products:\n";
+					response += "   - 'Compare ARCAD-Skipper vs ARCAD-Observer'\n";
+					response += "   - 'What's the difference between ARCAD-Transformer and ARCAD-CodeChecker'\n\n";
+					
+					response += "Available products by category:\n\n";
+					
+					// Group products by category for better organization
+					const productsByCategory = new Map<ProductCategory, string[]>();
+					Object.entries(ARCAD_PRODUCTS).forEach(([name, info]) => {
+						if (!productsByCategory.has(info.category)) {
+							productsByCategory.set(info.category, []);
+						}
+						productsByCategory.get(info.category)!.push(name);
+					});
+
+					// List products by category
+					productsByCategory.forEach((products, category) => {
+						response += `**${category}**:\n`;
+						products.forEach(product => {
+							response += `• ${product}\n`;
+						});
+						response += "\n";
+					});
+
+					response += "To compare products, you can:\n";
+					response += "1. Type 'Compare [Product1] and [Product2]'\n";
+					response += "2. Ask 'What's the difference between [Product1] and [Product2]'\n\n";
+					response += "For example:\n";
+					response += "- 'Compare ARCAD-Skipper and ARCAD-Observer'\n";
+					response += "- 'What's the difference between ARCAD-Transformer and ARCAD-CodeChecker'\n";
+
+					this.sendAnswer(response);
 				}
 			} else {
 				// 4. For all other questions, use the default configured URL as a fallback.
 				const productConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.product');
-				const defaultUrl = productConfig.get<string>('contextUrl') ?? ARCAD_PRODUCTS_URL;
+				const defaultUrl = productConfig.get<string>('contextUrl') ?? Constants.ARCAD_PRODUCTS_URL;
 				await this.getAnswerForUrl(question, defaultUrl, this._abortController.signal);
 			}
 		} finally {
@@ -309,10 +674,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 		let contextText = await this._fetchAndParseUrl(initialUrl, signal, 'main');
 
 		// 2. If content is insufficient, try the GitHub fallback URL
-		if (contextText.length < MIN_CONTENT_LENGTH) {
+		if (contextText.length < Constants.CONTENT.MIN_LENGTH) {
 			this.sendAnswer(`*Primary source had limited information. Fetching from ARCAD's GitHub for more context...*\n\n`);
-			const fallbackText = await this._fetchAndParseUrl(GITHUB_FALLBACK_URL, signal, '#org-repositories');
-			return { contextText: fallbackText, finalContextUrl: GITHUB_FALLBACK_URL };
+			const fallbackText = await this._fetchAndParseUrl(Constants.URLS.GITHUB_FALLBACK, signal, '#org-repositories');
+			return { contextText: fallbackText, finalContextUrl: Constants.URLS.GITHUB_FALLBACK };
 		}
 
 		return { contextText, finalContextUrl: initialUrl };
@@ -332,23 +697,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 	 */
 	private _handleError(error: any) {
 		if (axios.isCancel(error)) {
-			this.sendError("Request cancelled.");
+			this.sendError("I've paused our conversation as requested. Feel free to ask a new question!");
 		} else if (axios.isAxiosError(error)) {
 			if (error.code === 'ECONNABORTED') {
-				this.sendError('Sorry, the request to fetch web content timed out. The website may be slow or unavailable.');
+				this.sendError('I apologize, but I\'m having trouble accessing the latest product information. Please try your question again, or you can visit www.arcadsoftware.com directly.');
 			} else {
-				this.sendError(`Sorry, an error occurred while fetching web content: ${error.message}`);
+				this.sendError(`I encountered a small hiccup while gathering information. Could you please rephrase your question or try again in a moment? Error details: ${error.message}`);
 			}
 		} else {
-			let errorMessage = `Sorry, an error occurred with the Gemini API: ${error.message}`;
+			let errorMessage = `I'm having some technical difficulties right now. Let me try to help you understand why: ${error.message}`;
 			// Provide more user-friendly messages for common errors
 			if (error.message && typeof error.message === 'string') {
 				if (error.message.includes('API key not valid')) {
-					errorMessage = 'Your Gemini API key is not valid. Please check it in the VS Code settings (`arcad-ai-assistant.gemini.apiKey`) and ensure it is correct.';
+					errorMessage = 'I need a quick check of my settings. Could you please verify the Gemini API key in VS Code settings (`arcad-ai-assistant.gemini.apiKey`)? This helps me provide better assistance.';
 				} else if (error.message.includes('429')) { // Too many requests
-					errorMessage = 'You have sent too many requests to the Gemini API recently. Please wait a moment and try again.';
+					errorMessage = 'I\'m processing quite a few requests at the moment. Could you give me a quick moment to catch up? I\'ll be ready to help you shortly!';
 				} else if (error.message.includes('503') || error.message.toLowerCase().includes('model is overloaded')) {
-					errorMessage = 'The AI model is currently overloaded and could not process your request. Please try again in a few moments.';
+					errorMessage = 'I\'m experiencing high demand right now. Please try your question again in a few moments, and I\'ll be happy to help you!';
 				}
 			}
 			this.sendError(errorMessage);
@@ -375,39 +740,84 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 	private _getHtmlForWebview(webview: vscode.Webview) {
 		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.js'));
-
-		// Do the same for the stylesheet
 		const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'main.css'));
+		const codiconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
 
 		const nonce = getNonce();
 
+		const chatConfig = vscode.workspace.getConfiguration('arcad-ai-assistant.chat');
+		const suggestions = chatConfig.get<string[]>('promptSuggestions') ?? [
+			"How can ARCAD-Skipper help analyze my IBM i applications?",
+			"What are ARCAD's DevOps solutions for IBM i?",
+			"Compare ARCAD-Transformer RPG vs DB features",
+			"How to integrate ARCAD products with Jenkins pipeline?",
+			"Show me ARCAD's database modernization solutions",
+			"What are the system requirements for ARCAD-Deliver?"
+		];
+
+		const suggestionIcons = ['codicon-lightbulb', 'codicon-list-unordered', 'codicon-wand', 'codicon-question'];
+
+		const suggestionButtonsHtml = suggestions.map((suggestion, index) => {
+			// Cycle through the icons for visual variety
+			const icon = suggestionIcons[index % suggestionIcons.length];
+			// Basic HTML escaping to prevent issues with special characters in suggestions
+			const escapedSuggestion = suggestion.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			return `<button class="suggestion-button"><span class="codicon ${icon}"></span>${escapedSuggestion}</button>`;
+		}).join('');
 		return `<!DOCTYPE html>
 			<html lang="en">
 			<head>
 				<meta charset="UTF-8">
 				<!--
-					Use a content security policy to only allow loading images from https or from our extension directory,
+					Use a content security policy to only allow loading styles, fonts, and images from https or from our extension directory,
 					and only allow scripts that have a specific nonce.
 				-->
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+
+				<style nonce="${nonce}">
+					.prompt-suggestions {
+						display: flex;
+						flex-wrap: wrap;
+						justify-content: center;
+						gap: 8px;
+						padding: 20px 16px;
+						border-bottom: 1px solid var(--vscode-editorWidget-border);
+					}
+
+					.suggestion-button {
+						background-color: var(--vscode-button-secondaryBackground);
+						color: var(--vscode-button-secondaryForeground);
+						border: 1px solid var(--vscode-button-secondaryBorder, transparent);
+						padding: 6px 12px;
+						border-radius: 4px;
+						cursor: pointer;
+						text-align: left;
+						font-size: var(--vscode-font-size);
+						display: flex;
+						align-items: center;
+						gap: 8px;
+					}
+
+					.suggestion-button .codicon {
+						font-size: 1.2em;
+					}
+				</style>
 
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
 				<link href="${styleUri}" rel="stylesheet">
+				<link href="${codiconUri}" rel="stylesheet">
 				<title>ARCAD AI Assistant</title>
 			</head>
 			<body>
 				<div class="chat-container">
+					<div id="prompt-suggestions" class="prompt-suggestions">${suggestionButtonsHtml}</div>
 					<div id="message-history" class="message-history">
 						<!-- Messages will be populated by JavaScript -->
 					</div>
 					<div class="chat-input-container">
 						<textarea id="question-input" class="chat-input" placeholder="Ask about ARCAD products..."></textarea>
 						<button id="ask-button">Ask</button>
-						<!-- 
-							To add a cancel button, you could add the following HTML.
-							The main.js script would need to be updated to show/hide it and send the 'cancelRequest' message.
-							<button id="cancel-button" style="display: none;">Cancel</button>
-						-->
+						<button id="cancel-button" style="display: none;">Cancel</button>
 					</div>
 				</div>
 

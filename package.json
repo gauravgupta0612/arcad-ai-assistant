@@ -39,6 +39,21 @@
         }
       ]
     },
+    "commands": [
+      {
+        "command": "arcad-ai-assistant.newChat",
+        "title": "New Chat",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "arcad-ai-assistant.newChat",
+          "when": "view == arcad-ai-assistant.chatView"
+        }
+      ]
+    },
     "configuration": {
       "title": "ARCAD AI Assistant",
       "properties": {

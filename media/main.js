@@ -1,38 +1,54 @@
 // @ts-ignore
 const vscode = acquireVsCodeApi();
 
-const messageHistory = document.getElementById('message-history');
-const questionInput = document.getElementById('question-input');
-const askButton = document.getElementById('ask-button');
+const messageHistory = document.getElementById("message-history");
+const questionInput = document.getElementById("question-input");
+const askButton = document.getElementById("ask-button");
+const promptSuggestions = document.getElementById("prompt-suggestions");
 
-askButton.addEventListener('click', handleSendQuestion);
-questionInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        handleSendQuestion();
-    }
+function askQuestion(questionText) {
+	const question = (questionText || questionInput.value).trim();
+	if (question) {
+		vscode.postMessage({
+			type: "addQuestion",
+			value: question,
+		});
+
+		addMessage(question, "user");
+		questionInput.value = "";
+	}
+}
+
+askButton.addEventListener("click", () => askQuestion());
+questionInput.addEventListener("keydown", (event) => {
+	if (event.key === "Enter" && !event.shiftKey) {
+		event.preventDefault();
+		askQuestion();
+	}
 });
 
-function handleSendQuestion() {
-    const question = questionInput.value.trim();
-    if (question) {
-        vscode.postMessage({
-            type: 'addQuestion',
-            value: question
-        });
-
-        addMessage(question, 'user');
-        questionInput.value = '';
-    }
+if (promptSuggestions) {
+	promptSuggestions.addEventListener("click", (event) => {
+		const target = event.target;
+		if (target.classList.contains("suggestion-button")) {
+			askQuestion(target.textContent);
+		}
+	});
 }
 
 window.addEventListener('message', event => {
     const message = event.data; 
 
     switch (message.type) {
+        case 'clearChat': {
+            messageHistory.innerHTML = '';
+            if (promptSuggestions) {
+                promptSuggestions.style.display = 'flex';
+            }
+            break;
+        }
         case 'updateStatus': {
-            const history = document.getElementById('message-history');
-            history.innerHTML = '';
+            messageHistory.innerHTML = '';
             addMessage(message.text, 'assistant', false, !message.isConnected);
             const isConnected = message.isConnected;
             questionInput.disabled = !isConnected;
@@ -45,6 +61,9 @@ window.addEventListener('message', event => {
             break;
         }
         case 'answerStart':
+            if (promptSuggestions) {
+                promptSuggestions.style.display = 'none';
+            }
             addMessage('...', 'assistant', true);
             break;
         case 'addAnswer': {
@@ -82,6 +101,9 @@ window.addEventListener('message', event => {
 
 function addMessage(text, type, isThinking = false, isError = false) {
     const messageElement = document.createElement('div');
+    if (promptSuggestions && messageHistory.children.length > 0) {
+		promptSuggestions.style.display = "none";
+	}
     messageElement.className = `message ${type}-message`;
     if (isThinking) {
         messageElement.classList.add('thinking');
